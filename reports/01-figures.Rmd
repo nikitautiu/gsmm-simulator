@@ -1,0 +1,1127 @@
+---
+title: "01-figures"
+author: "Nichita Utiu"
+date: "2023-08-07"
+output: html_document
+---
+
+## Init
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      eval = TRUE,
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.path = "Figures/",
+                      fig.width = 12,
+                      fig.height = 8)
+```
+
+```{r}
+library(tidyverse)
+library(hrbrthemes)
+library(reticulate)
+library(ggrepel)
+library(khroma)
+library(arrow)
+library(ggbeeswarm)
+library(ordr)
+library(jsonlite)
+library(latex2exp)
+library(patchwork)
+library(kableExtra)
+
+reticulate::use_miniconda("biotools") # initialize reticulate
+theme_set(theme_ipsum() + theme(plot.margin = unit(c(0,0,0,0), "cm")))
+```
+
+```{r}
+source('../R/evaluation.R')
+```
+
+
+
+First, let's load the results data.
+
+```{r}
+# load the results for PCA, ASCA and PLS
+files <- Sys.glob('../data/interim/separate_results/*_RESULT*.gz.parquet')
+
+base_results <- files %>% 
+  map(~ read_parquet(.x)) %>% 
+  bind_rows() 
+
+
+results <- base_results %>% 
+  # dump margin = 0
+  filter(dataset_margin > 0) %>% 
+  
+  # reduce to 30 reps
+  filter(rep <= 30) %>% 
+  
+  # do not inclue random pathways
+  filter(random_spec) %>% 
+  
+  # do not  include mofa grouped
+  filter(model_type != 'MOFA_GROUPED')
+
+```
+
+```{r}
+files
+```
+
+
+
+
+```{r}
+path <- '../data/interim/final_new/SET10301_L2_M10_T1000_MG100/'
+raw_data <- load_data(path)
+clean_data <- raw_data%>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene")) %>% 
+  add_noise(0)
+
+clean_data2 <- raw_data %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene")) %>% 
+  add_noise(0)
+
+
+```
+
+
+```{r}
+raw_data <- load_data('../data/interim/final2/SET402_L2_M10_T1000_MG0.1/')
+clean_data <- load_data('../data/interim/final2/SET402_L2_M10_T1000_MG0.1/') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene")) %>% 
+  add_noise(0)
+
+clean_data2 <- load_data('../data/interim/final2/SET402_L2_M10_T1000_MG0.1/') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene")) %>% 
+  add_noise(0)
+
+
+```
+
+
+
+```{r}
+
+
+plot_pca_with_ref <- function(clean_data, new_data) {
+  noisy_full_data <- clean_data$noisy_data
+  # sim_specs <- raw_data$specs
+  pca_res <- noisy_full_data %>% 
+    ordinate(cols = -c(EX_o2_m_lvl, EX_nh4_m_lvl,  samp), model = ~ prcomp(., scale. = TRUE))
+
+  # add source data
+  pca_res <- pca_res %>% 
+    mutate_cols(source = clean_data$col_types)
+
+  # predict for new data
+  new_res <- rlang::duplicate(pca_res)
+  new_res$x <- predict(pca_res, newdata = new_data$noisy_data)
+  new_res$sdev <- round(unname(sapply(as.data.frame(new_res$x), sd)), 0)
+  
+  # iterate all pathways
+  # feats <- sim_specs[[1]]
+  
+  p <- new_res %>% 
+    ggbiplot() +
+    geom_rows_point(
+      aes(color = as_factor(EX_o2_m_lvl), shape = as_factor(EX_nh4_m_lvl)),
+      alpha = 0.5, size=0.5
+    ) +
+# 
+#     geom_cols_vector(
+#       data = . %>%  filter(name %in% feats),
+#       # color = color, 
+#       alpha=0.5, 
+#     ) +
+    geom_polygon(
+      aes(group = fct_cross(as_factor(EX_o2_m_lvl), as_factor(EX_nh4_m_lvl)), 
+          color = as_factor(EX_o2_m_lvl), linetype = as_factor(EX_nh4_m_lvl)), 
+       alpha = 0.75, stat = "rows_ellipse", fill = NA, size = 0.25
+    ) +
+    # geom_cols_text_repel(
+    #   aes(label = name),
+    #   data = . %>%  filter(name %in% feats),
+    #   # color = color
+    # ) +
+    labs(color = "O2", shape ="NH4") +
+    scale_color_bright() +
+    scale_fill_bright() +
+    scale_linetype(guide = "none") 
+ 
+  p 
+}
+
+plot_pca_with_ref(clean_data, clean_data)
+p  <- plot_pca_with_ref(clean_data, clean_data2)
+p
+```
+
+
+### Combined PCA plot
+
+```{r}
+load_data('../data/interim/final2/SET101_L2_M10_T1000_MG0.1/') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene", "internal"), imp_feats = .$specs) 
+```
+
+
+```{python}
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+
+```
+
+```{r}
+extract_clustering_metrics <- function(filenames, noise_lvls = c(0, 0.1, 0.5, 1)) {
+  filenames <- as.list(filenames)
+  
+  filenames %>% map(~ {
+    filename <- .x
+    dat <- load_data(filename) %>% 
+      clean_up_data() %>% 
+      subset_features(c("bm", "metab", "gene", "internal")) 
+    delta <- filename %>% str_extract('MG([0-9.]+)(/|$)', 1) %>%  as.numeric()
+    dataset_name <-  filename %>% str_extract('SET[0-9]+', 0)
+    
+    map(noise_lvls, ~ {
+      dat <- dat %>% 
+        add_noise(.x)
+      
+      X <- dat$noisy_data %>% 
+        select(-c(samp, EX_o2_m_lvl, EX_nh4_m_lvl)) %>% 
+        as.matrix()
+      
+      Y <- dat$noisy_data %>% 
+        transmute(cond = as_factor(10 * EX_o2_m_lvl + EX_nh4_m_lvl) %>% as.numeric()) %>% 
+        pull(cond)
+        
+      sil <- py$silhouette_score(X = X, labels = Y)
+      db <- py$davies_bouldin_score(X = X, labels = Y)
+      
+      tribble(~ dataset_name, ~ epsilon, ~ delta, ~ db, ~ sil, 
+              dataset_name, .x, delta, db, sil)
+    }) %>% 
+      bind_rows()
+  }) %>%
+    bind_rows()
+}
+
+# extract the clustering metrics for all datasets
+clst_metrics <- Sys.glob('../data/interim/final2/SET*')  %>% 
+  str_subset('_T1000_') %>% 
+  extract_clustering_metrics()
+clst_metrics
+```
+
+```{r}
+# Davies-Bouldin + Silhouette Scores
+clst_metrics %>% 
+  # compute means and reformat table to wider
+  group_by(epsilon, delta) %>% 
+  summarise(db = mean(db), sil = mean(sil)) %>% 
+  ungroup() %>% 
+  mutate(db = round(db, 2), sil = round(sil, 2)) %>%
+  mutate(scores = glue::glue('{db} / {sil}')) %>% 
+  select(delta, epsilon, scores) %>% 
+  pivot_wider(names_from = epsilon, values_from = scores) %>% 
+  
+  # create latex
+  kable(format = "latex", booktabs = TRUE, linesep = "", align = c("lllll"),
+        caption = "", label = "tab:clust_score",
+        col.names = c("", "0", "0.1", "0.5", "1.0")) %>%
+    kable_styling(latex_options = c("hold_position")) %>%
+    add_header_above(c("Delta" = 1, "Epsilon" = 4)) %>% 
+  cat(file = 'figs/clust_tab.tex')
+```
+
+```{r}
+clst_metrics %>% 
+  filter(delta != 0) %>% 
+  # compute means and reformat table to wider
+  group_by(delta) %>% 
+  summarise(db = mean(db), sil = mean(sil)) %>% 
+  ungroup() %>% 
+  mutate(db = round(db, 2), sil = round(sil, 2)) %>%
+  mutate(scores = glue::glue('{db} / {sil}')) %>% 
+  select(delta, scores) %>% 
+  pivot_wider(names_from = delta, values_from = scores) 
+```
+
+
+
+```{r}
+
+dat <- load_data('../data/interim/final2/SET101_L2_M10_T1000_MG0.1/') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene", "internal"), imp_feats = .$specs) %>% 
+  add_noise(0) 
+
+p1 <- plot_pca_with_ref(dat, dat) + 
+  labs(title = TeX("(a) $\\delta$ = 0.1, $\\epsilon$ = 0, T = 1000")) 
+
+p2 <- load_data('../data/interim/final2/SET101_L2_M10_T10_MG0.1//') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene", "internal"), imp_feats = .$specs) %>% 
+  add_noise(0) %>% 
+  plot_pca_with_ref(dat, .) + 
+    labs(title = TeX("(b) $\\delta$ = 0.1, $\\epsilon$ = 0, T = 10")) 
+
+
+p3 <- load_data('../data/interim/final2/SET101_L2_M10_T10000_MG0.1/') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene", "internal"), imp_feats = .$specs) %>% 
+  add_noise(0) %>% 
+  plot_pca_with_ref(dat, .) + 
+    labs(title = TeX("(c) $\\delta$ = 0.1, $\\epsilon$ = 0, T = 10000"))
+
+p4 <- load_data('../data/interim/final2/SET101_L2_M10_T1000_MG0.1/') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene", "internal"), imp_feats = .$specs) %>% 
+  add_noise(1) %>% 
+  plot_pca_with_ref(dat, .) + 
+    labs(title = TeX("(d) $\\delta$ = 0.1, $\\epsilon$ = 1, T = 1000"))
+
+p5 <- load_data('../data/interim/final2/SET101_L2_M10_T1000_MG0.5/') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene", "internal"), imp_feats = .$specs) %>% 
+  add_noise(0) %>% 
+  plot_pca_with_ref(dat, .) + 
+    labs(title = TeX("(e) $\\delta$ = 0.5, $\\epsilon$ = 0, T = 1000"))
+
+p6 <- load_data('../data/interim/final2/SET101_L2_M10_T1000_MG0.5/') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene", "internal"), imp_feats = .$specs) %>% 
+  add_noise(1) %>% 
+  plot_pca_with_ref(dat, .) + 
+    labs(title = TeX("(f) $\\delta$ = 0.5, $\\epsilon$ = 1, T = 1000"))
+
+
+p_1 <- p1 | p2 | p3
+p_2 <- p4 | p5 | p6
+  
+
+p <- (p_1 / p_2)  & 
+  theme(plot.margin = margin(0, 0.2, 0, 0.2, unit = "cm"), 
+        plot.title = element_text(size = 10, face = "bold", vjust = -2, hjust = 0),
+        plot.title.position = "plot", # left justify to plot
+        legend.title = element_text(size = 8), 
+        axis.text = element_text(size = 6),
+        axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 8),
+        axis.title = element_text(size = 8),
+        legend.key.width = unit(0.5, 'cm'),
+        legend.position = "right") &
+  xlim(c(-10, 10)) &
+  ylim(c(-8, 8)) 
+
+p <- p + theme(legend.position = "right", 
+                legend.key.width = unit(0.3, 'cm'), 
+                legend.text = element_text(size = 6)) +
+  plot_layout(guides = "collect")
+
+ggsave('./figs/pca.png', plot = p, width = 14, height = 8.5, units = "cm")
+p
+```
+
+
+
+
+
+```{r}
+
+add_names <- function(loadings, clean_data, specs) {
+  specs <-  specs %>% list_c() %>% list()
+  loadings %>% 
+    left_join(cln_data_to_col_map(clean_data), by ="feature") %>%
+    mutate(
+      is_imp = feature %in% specs[[1]],
+      is_target = feature ==  specs[[1]][[length(specs[[1]])]],
+      match_ind = match(feature, specs[[1]])  # index
+    ) %>% 
+    arrange(match_ind) %>% 
+    group_by(is.na(is_imp), type, samp, EX_o2_m_lvl, EX_nh4_m_lvl) %>% 
+    mutate(feat_name = ifelse(is_imp, row_number(), NA)) %>% 
+    mutate(new_type = recode(type, "bm" = "Biomass", "metab" = "Metabolite", "gene" = "Gene", "internal" = "Internal")) %>% 
+    mutate(feat_name = ifelse(is_imp, glue::glue("{new_type} - {feat_name}"), feature)) %>% 
+    ungroup() %>% 
+    select(-match_ind, new_type)
+}
+
+dat <- load_data('../data/interim/final_new/SET101_L2_M10_T1000_MG100/') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene", "internal"), imp_feats = .$specs) %>% 
+  add_noise(0) 
+
+dat <- dat$noisy_data %>%   
+  pivot_longer(cols = -c(samp, EX_o2_m_lvl, EX_nh4_m_lvl), names_to = "feature") %>% 
+  add_names(dat, dat$specs)
+
+```
+
+
+
+
+```{r}
+dat %>% filter(!is_imp) %>% 
+  distinct(feature)
+```
+
+
+
+```{r}
+p <- dat %>% 
+  filter(is_imp | (feat_name == "b1849")) %>% 
+  mutate(cond = as_factor(glue::glue("{EX_o2_m_lvl},{EX_nh4_m_lvl}"))) %>% 
+  ggplot(aes(y =value, x = as_factor(cond), color = as_factor(is_imp))) +
+    geom_violin(draw_quantiles = c(0.5), fill = NA, linewidth=0.3) +
+    # stat_summary(geom = "point") +
+    facet_wrap(~ feat_name, ncol = 2) +
+    labs(y=TeX("Flux (mmol $h^{-1}$ gDW)"), x = TeX("Condition ($O_2, NH_4$)")) +
+    scale_color_bright() +
+  
+    theme(legend.position = "none") +
+    theme(plot.title = element_text(size=14),
+          legend.margin = margin(0, 0, 0, 0),
+          legend.key.width = unit(0.3, 'cm'), legend.key.height = unit(0.3, 'cm'),
+          panel.spacing = unit(0, "lines"),
+          panel.margin = unit(0.1, "cm"))  +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+    )
+
+ggsave('./figs/flux.png', plot = p, width = 8.5, height = 12, units = "cm") 
+p
+```
+
+
+
+## Distributions
+
+```{r}
+cln_data <- load_data('../data/interim/final2/SET101_L2_M10_T1000_MG0.1/') %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene", "internal"), imp_feats = .$specs) %>% 
+  add_noise(0.1) 
+
+p <- cln_data %>% 
+  pluck("noisy_data") %>%
+  pivot_longer(cols = -c(samp, EX_o2_m_lvl, EX_nh4_m_lvl), names_to = "feature") %>%
+  inner_join(cln_data_to_col_map(cln_data), by = "feature") %>% 
+  
+  mutate(cond = as_factor(glue::glue("O2 = {EX_o2_m_lvl} NH4 = {EX_nh4_m_lvl}"))) %>% 
+  mutate(type = fct_recode(type, 'Gene' = 'gene', 'Biomass' = 'bm', 'Metabolite' = 'metab', "Internal" = 'internal')) %>% 
+  ggplot(aes(x = value, color = as_factor(type),)) +
+  geom_density(position = "identity", aes(color = as_factor(type)), alpha = 0.2, na.rm = T, linewidth = 0.2) +
+    facet_wrap(~ cond) +
+    labs(x = TeX("Flux (mmol $h^{-1}$ gDW)"), y = "Density", color = "Type") +
+  scale_color_bright() + 
+  guides(color=guide_legend(nrow=2,byrow=TRUE)) +
+  theme(legend.position = "bottom") +
+  theme(panel.spacing.x = unit(0.2, 'cm'), plot.title = element_text(size=14),
+        legend.margin = margin(0, 0, 0, 0),
+        legend.key.width = unit(0.3, 'cm'), legend.key.height = unit(0.3, 'cm'))
+    
+
+ggsave('./figs/dense.png', plot = p, width = 8.5, height = 8.5, units = "cm") 
+p
+```
+
+
+
+## Autocorrelation
+
+```{r}
+thin_data <- c(
+  '../data/interim/final2/SET101_L2_M10_T10_MG0.1',
+  '../data/interim/final2/SET101_L2_M10_T100_MG0.1',
+  '../data/interim/final2/SET101_L2_M10_T1000_MG0.1',
+  '../data/interim/final2/SET101_L2_M10_T10000_MG0.1'
+) %>%  map(~ {
+  thin <-  .x  %>% 
+    str_extract('_T([0-9]+)', 1 ) %>%  
+    as.numeric()
+  
+  load_data(.x, keep_raw = T)$raw_bm_data %>% 
+    filter(EX_o2_m_lvl == 0, EX_nh4_m_lvl == 0, str_starts(reaction, 'Biomass'), str_ends(reaction, "__M0")) %>% 
+    arrange(samp) %>% 
+    mutate(thin = thin)
+}) %>% 
+  bind_rows()
+  
+  
+```
+
+
+
+```{r}
+
+thinnings <- thin_data %>% 
+  distinct(thin) %>% 
+  pull(thin)
+
+plots <- thinnings %>% map(~ {
+  res <- thin_data %>% 
+    filter(thin == .x) %>% 
+    pull(flux) 
+  
+  acf_res <- acf(res, lag.max = 100, plot = F)$acf[-1]
+  
+  tibble(acf = as_vector(acf_res)) %>% 
+    mutate(lag = row_number()) %>% 
+    ggplot(aes(x = lag, y = acf)) +
+      geom_hline(yintercept = c(-0.25, 0.25), linetype = "dashed") +
+      geom_segment(mapping = aes(x = lag, xend = lag, y = 0, yend = acf)) +
+      geom_point(size=0.2) +
+      labs(x = "Lag", y = "Autocorrelation", title = glue::glue("T = {.x}")) +
+      ylim(NA, 1.0) + theme(plot.title = element_text(size = 10, face = "bold", hjust = 1, vjust = -10)) +
+      theme(plot.margin = margin(0, 0, 0, 0))
+})
+
+p <- wrap_plots(list(
+  plots[[1]] + labs(x = "") + theme(axis.text.x = element_blank(), axis.title.x = element_blank()),
+  plots[[2]] + labs(x = "", y = "") + theme(axis.text.x = element_blank(), axis.title.x = element_blank()),
+  plots[[3]] + labs(x = "", y = "") + theme(axis.text.x = element_blank(), axis.title.x = element_blank()),
+  plots[[4]] + labs(y = "")
+), ncol = 1, clip = T)
+
+ggsave('./figs/autocorr.png', plot = p, width = 8.5, height = 10, units = "cm")
+
+p
+```
+
+
+
+## Visualization of results for noise
+
+```{r}
+results
+```
+
+```{r}
+base_results %>% distinct(model_type)
+```
+
+
+
+```{r}
+library(ggpubr)
+
+
+target_samps <-  10
+target_noise <- 0.1
+target_margin <- 0.1
+
+get_model_name <- function(model_type, dist_type, dist_abs) {
+  # compute a name for the model type
+  model_type = ifelse(model_type == "dummy", "Baseline", model_type)  # rename dummy to baseline
+  dist_str = ifelse(dist_type == 'euclidean', 'L2', 'Cos')
+  dist_str = ifelse(dist_abs, glue::glue('{dist_str}\n(A)'), dist_str)
+  first_part = ifelse(model_type == 'PLS', '', glue::glue('{dist_str}'))
+  
+  glue::glue("{first_part}")
+}
+
+
+best_models <- results %>% 
+  mutate(rank = rank / 40) %>% 
+  filter(n_samps == target_samps, noise_lvl == target_noise, dataset_margin == target_margin) %>%
+  # 10% margi nand error
+  filter(model_type != "dummy") %>%
+  group_by(model_type, dist_type, dist_abs) %>% 
+  summarise(rank = mean(rank), mean_rank = mean(rank)) %>% 
+  group_by(model_type) %>% 
+  arrange(rank, mean_rank) %>% 
+  slice_head(n = 1) %>% 
+  ungroup() %>% 
+  
+  # add the proper dist name
+  mutate( model_type = ifelse(model_type == "dummy", "Baseline", model_type) ) %>% 
+  mutate(dist_name = get_model_name(model_type, dist_type, dist_abs))  %>% 
+  mutate(dist_name = ifelse(model_type == 'PLS', 'ViP', dist_name))  # set PLS to ViP
+
+
+p1 <- results %>% 
+  mutate(rank = rank / 40) %>% 
+  # 10% margi nand error
+  filter(model_type != "dummy") %>%
+  filter(n_samps == target_samps, noise_lvl == target_noise, dataset_margin == target_margin) %>%
+  
+  # rename dummy
+  mutate( model_type = ifelse(model_type == "dummy", "Baseline", model_type) ) %>% 
+  # get the distance name
+  mutate(dist_name = get_model_name(model_type, dist_type, dist_abs)) %>%
+  mutate(dist_name = ifelse(model_type == 'PLS', 'ViP', dist_name)) %>%   # set PLS to ViP
+
+  # rename the feature types
+  mutate(type = fct_recode(type, 'Gene' = 'gene', 'Biomass' = 'bm', 'Metabolite' = 'metab', "Internal" = 'internal')) %>% 
+  
+  # differentiate between differnt types of pathways with features
+  mutate(
+    h_str = ifelse(pathway_has_host, 'H', ''), m_str = ifelse(pathway_has_microbe, 'M', ''),
+    type = type %>% as.numeric(),
+    full_type = glue::glue("{type}({h_str}{m_str})") %>%  as_factor()
+  ) %>% 
+
+  
+  mutate(model_type = factor(model_type, levels=c("PCA", "ASCA", "MOFA", "PLS"))) %>% 
+  ggplot(aes(x = as_factor(dist_name), y = rank)) +
+    # stat_summary(aes(x = as_factor(dist_name), y = rank),
+    #              shape = 2, 
+    #              size=0.1,
+    #              inherit.aes = F,
+    #              geom='pointrange',
+    #              fun.data=mean_cl_normal) +
+    # stat_summary(fun.data = quantiles_95, geom = 'boxplot') +
+    geom_violin(fill = NA,  linewidth = 0.25, 
+                  draw_quantiles = c(0.5), scale="width") +
+  
+    stat_compare_means(
+      paired=F,
+      inherit.aes = F,
+      tip.length = 0.01,
+      label.size = 0.1,
+      method = "wilcox.test",
+      label='p.signif',
+      size = 3,
+      hide.ns = T,
+      vjust=0.5,
+      aes(x = as_factor(dist_name), y = rank),
+      # label.y = 0.95 + cumsum(rep(0.05, 3)),
+      comparisons = list(c('Cos', 'L2'),  c('L2', 'Cos\n(A)'), c('Cos\n(A)', 'L2\n(A)'),
+                         c('Cos', 'Cos\n(A)'), c('L2', 'L2\n(A)'), c('Cos', 'L2\n(A)'))
+    ) +
+
+    geom_point(data = best_models %>%  filter(model_type != "Baseline"), size=1) +
+    geom_text(
+      data = best_models %>%  filter(model_type != "Baseline"),  
+      aes(label = round(rank, 2)), 
+      size = 3, nudge_y = 0.1
+    ) +
+  
+    facet_grid(~ factor(model_type, levels=c("Baseline", "PCA", "ASCA", "MOFA", "PLS")), 
+                         scale='free_x', space = "free_x") +
+    
+    labs(y = 'Normalized Rank', x = 'Distance Function', color = 'Feature Type') + 
+    scale_color_bright() +
+
+    theme(legend.position = 'bottom') +
+    theme(panel.grid.major.x = element_blank()) +
+    ylim(0, NA)
+
+ggsave('./figs/ranks_by_model.png', plot = p1, width = 20, height = 8.5, units = "cm")
+p1
+```
+
+
+
+
+```{r}
+
+
+p2 <- results %>% 
+  semi_join(best_models, by = c('model_type', 'dist_type', 'dist_abs'), na_matches='na')  %>% 
+  mutate(rank = rank / 40) %>% 
+  # 10% margi nand error
+  # filter(model_type != "dummy") %>%
+  filter(n_samps == target_samps, noise_lvl == target_noise, dataset_margin == target_margin) %>%
+  
+  # rename dummy
+  mutate( model_type = ifelse(model_type == "dummy", "Baseline", model_type) ) %>% 
+  # get the distance name
+  mutate(dist_name = get_model_name(model_type, dist_type, dist_abs)) %>%
+  mutate(dist_name = ifelse(model_type == 'PLS', 'ViP', dist_name)) %>%   # set PLS to ViP
+  
+  # rename the feature types
+  mutate(type = fct_recode(type, 'Gene' = 'gene', 'Biomass' = 'bm', 'Metabolite' = 'metab', "Internal" = 'internal')) %>% 
+  
+  # differentiate between differnt types of pathways with features
+  mutate(
+    h_str = ifelse(pathway_has_host, 'H', ''), m_str = ifelse(pathway_has_microbe, 'M', ''),
+    path_type = glue::glue("{h_str}{m_str}"),
+    full_type = glue::glue("{as.character(type)}({path_type})") %>%  as_factor()
+  ) %>% 
+  
+  mutate(model_type = fct_relevel(model_type, c("Baseline", "PCA", "ASCA", "MOFA", "PLS"))) %>% 
+  ggplot(aes(x = as_factor(model_type), y = rank, 
+             # color = as_factor(str_sub(dataset_set, 1, 4))
+             color = as_factor(type)
+          )) +
+    # stat_summary(geom='pointrange', position=position_dodge2(width=0.75), 
+    #              fun.data=mean_cl_normal, size=0.1) +
+    # stat_summary(aes(x = as_factor(model_type), y = rank),
+    #              shape = 2, 
+    #              size=0.1,
+    #              inherit.aes = F,
+    #              geom='pointrange',
+    #              fun.data=mean_cl_normal) +
+    geom_violin(
+      aes(linetype = path_type %>%  as_factor()),
+      fill = NA,  linewidth = 0.25,
+      draw_quantiles = c(0.5), scale="width"
+    ) +
+
+    # geom_beeswarm(aes(group = fct_cross(as_factor(model_type), as_factor(type)))) +
+
+    stat_compare_means(
+      paired=F,
+      inherit.aes = F,
+      tip.length = 0.01,
+      label.size = 0.5,
+      aes(x = as_factor(model_type), y = rank),
+      method = "wilcox.test", 
+      label='p.signif',
+      hide.ns = T,
+      comparisons = list(c("PCA", "ASCA"), c("ASCA", "MOFA"), c("MOFA", "PLS"), c("PCA", "MOFA"), c("ASCA", "PLS"), c("PCA", "PLS")),
+      # label.y = c(0.22, 0.27, 0.27, 0.32, 0.37, 0.42) + 0.65,
+      # label.y = 0.75 + cumsum(rep(0.1, 6)),
+      vjust = 0.5,
+      size = 3
+    ) +
+    stat_summary(geom = "point",
+                 aes(x = as_factor(model_type), y = rank),
+                 inherit.aes = F, size=1) +
+    
+    # stat_summary(
+    #   geom = "text",
+    #   aes(x = as_factor(model_type),  y=rank, label = round(after_stat(y), 2)), 
+    #   size = 3, nudge_x = 0.4, inherit.aes = F
+    # ) +
+  
+    # geom_text(
+    #   data = best_models %>%  
+    #     filter(model_type != "Baseline"),  
+    #   aes(label = round(rank, 2), x=as_factor(model_type), y=rank), 
+    #   size = 3, nudge_y = 0.1, nudge_x=0.1,
+    #   inherit.aes = F
+    # ) +
+
+
+    labs(y = 'Normalized Rank', x = 'Model', color = 'Feature Type', linetype='Pathway Type') + 
+    scale_color_bright() +
+
+    theme(legend.position = 'bottom') +
+    theme(panel.grid.major.x = element_blank()) +
+    ylim(0, NA)
+
+
+ggsave('./figs/ranks_by_model_by_type.png', plot = p2 + guides(color=guide_legend(nrow=2,byrow=TRUE)), width = 8.5, height = 10, units = "cm")
+p2
+```
+
+```{r}
+
+p <- (
+  p1 +
+    theme(plot.margin = margin(0, 0.25, 0, 0, unit = "cm"), 
+          panel.margin = margin(0, 0, 0.15, 0, unit="cm")) +
+    labs(title = "(a) Distance Measure")
+  ) +
+  (
+    p2 +
+      theme(axis.title.y = element_blank(), axis.text.y = element_blank()) +
+      labs(title = "(b) Model") 
+  ) +
+  plot_layout(guides = "collect", widths = c(2, 2)) &
+  # plot_annotation(tag_levels = 'a') &
+  theme(legend.position = 'bottom', panel.margin = unit(0.15, "cm"), plot.title = element_text(size=14)) &
+  expand_limits(y = c(0, 1))
+
+ggsave('./figs/ranks_all.png', plot = p, width = 21, height = 10, units = "cm")
+p
+```
+
+
+
+## Loading plots
+
+
+
+```{r}
+raw_data <- load_data('../data/interim/final2/SET402_L2_M10_T1000_MG0.1/')
+# raw_data <- load_data('../data/interim/final_new/SET10103_L2_M10_T1000_MG100/') 
+
+  
+clean_data <- raw_data %>% 
+  clean_up_data() %>% 
+  subset_features(c("bm", "metab", "gene", "internal"), imp_feats = .$specs, keep_max = 10) %>% 
+  add_noise(0.5) 
+
+specs <- raw_data$specs %>% 
+  list_c() %>% 
+  list()
+
+annotate_feats <- function(loadings, clean_data, specs) {
+  loadings %>% 
+    left_join(cln_data_to_col_map(clean_data), by ="feature") %>%
+    select(feature, PC1, PC2, type) %>% 
+    mutate(
+      is_imp = feature %in% specs[[1]],
+      is_target = feature ==  specs[[1]][[length(specs[[1]])]],
+      match_ind = match(feature, specs[[1]])  # index
+    ) %>% 
+    arrange(match_ind) %>% 
+    group_by(is.na(is_imp), type) %>% 
+    mutate(feat_name = ifelse(is_imp, row_number(), NA)) %>% 
+    mutate(new_type = recode(type, "bm" = "Biomass", "metab" = "Metabolite", "gene" = "Gene", "internal" = "Internal")) %>% 
+    mutate(feat_name = ifelse(is_imp, glue::glue("{new_type} - {feat_name}"), NA)) %>% 
+    ungroup() %>% 
+    select(-match_ind, new_type)
+}
+
+res_pca <- clean_data$noisy_data %>% 
+  run_pca(clean_data$data_cols) %>%
+  loadings_from_pca() %>%
+  as.data.frame() %>% 
+  rownames_to_column('feature') %>% 
+  annotate_feats(clean_data, specs)
+
+res_asca <- clean_data$noisy_data %>% 
+  run_asca("EX_o2_m_lvl", "EX_nh4_m_lvl") %>%
+  loadings_from_asca() %>%
+  as.data.frame() %>% 
+  rownames_to_column('feature') %>% 
+  annotate_feats(clean_data, specs)
+
+res_mofa <- clean_data %>% 
+  run_MOFA() %>%
+  loadings_from_MOFA() %>% 
+  as.data.frame() %>% 
+  rownames_to_column('feature') %>% 
+  mutate(PC1 = Factor1, PC2 = Factor2) %>% 
+  annotate_feats(clean_data, specs)
+
+res_pls <- clean_data$noisy_data %>% 
+  run_pls(meta_cols = clean_data$meta_cols, feat = specs[[1]][[length(specs[[1]])]]) %>% 
+  importances_from_pls() %>% 
+  as.data.frame() %>% 
+  rownames_to_column('feature') %>% 
+  mutate(PC1 = comp1, PC2 = comp2) %>% 
+  annotate_feats(clean_data, specs)
+
+
+res_pls
+```
+
+
+
+
+
+```{r}
+list(res_pca, res_asca, res_mofa, res_pls) %>% 
+walk(~ {
+  base_size <- 0.5
+  p <- .x %>% 
+    ggplot(aes(x = PC1, y = PC2, color = as_factor(type))) +
+      geom_point() +
+      geom_segment(data = . %>% filter(is_imp, !is_target), xend=0, yend=0, alpha=0.5, size = base_size) +
+      geom_text_repel(data = . %>% filter(is_imp), mapping = aes(label = feat_name),  
+                      max.overlaps = Inf, nudge_x = .01, nudge_y = .01, point.padding = 0.2) +
+      geom_segment(data = . %>% filter(is_target), size=base_size * 2, xend=0, yend=0, alpha=0.5) +
+      scale_color_bright()
+  print(p)
+})
+```
+
+
+
+## Model breakdown with noise
+
+```{r}
+library(latex2exp)
+
+quantiles_95 <- function(x) {
+  r <- quantile(x, probs=c(0.05, 0.25, 0.5, 0.75, 0.95))
+  names(r) <- c("ymin", "lower", "y", "upper", "ymax")
+  r <- r %>% as.list() 
+  # r$y = mean(x)
+  
+  mean_ci(x)
+}
+
+
+in_data <- results %>% 
+  mutate(rank = rank / 40) %>% 
+  mutate(set = str_sub(dataset_set, 1, 4)) %>% 
+  filter(n_samps == 10) %>%   # 100 samples
+  filter(model_type != 'dummy') %>%
+  filter(model_type != 'dummy', model_type != 'MOFA_GROUPED') %>%
+  
+  # just pls and asc/pca with non abs cosine
+  filter((model_type == 'PLS') | (model_type != 'PLS' & !dist_abs & dist_type == 'cosine')) %>% 
+  
+  group_by(model_type,  dataset_margin, noise_lvl) %>% 
+  # compute the intervals
+  mutate(rank_y = quantiles_95(rank)$y, rank_min = quantiles_95(rank)$ymin, rank_max = quantiles_95(rank)$ymax) %>% 
+  ungroup()
+  
+p <- in_data %>% 
+  # aesthetic related mutations
+  mutate(type = fct_recode(type, 'Gene' = 'gene', 'Biomass' = 'bm', 'Metabolite' = 'metab')) %>% 
+  
+  ggplot(aes(x = as_factor(dataset_margin), y = as_factor(noise_lvl), fill = rank_y)) +
+    # stat_summary(geom='tile')
+    geom_tile() +
+    geom_point(aes(y = as.numeric(as_factor(noise_lvl)) - 0.2, color = rank_min)) +
+    geom_point(aes(y = as.numeric(as_factor(noise_lvl)) + 0.2, color = rank_max)) +
+
+    facet_wrap(~ model_type, ncol = 2) +
+    # add color scales
+    scale_fill_iridescent(limits = c(min(in_data$rank_min), max(in_data$rank_max))) +
+    scale_color_iridescent(limits = c(min(in_data$rank_min), max(in_data$rank_max))) +
+  
+    # coords and such
+    guides(color=FALSE) +
+    coord_equal() +
+    labs(x = TeX('Margin ($\\delta$)'), y = TeX('Noise Ratio ($\\epsilon$)'), fill = 'Norm\nRank') +
+    theme(panel.grid.major.x = element_blank(), panel.grid.major.y = element_blank(), 
+          panel.spacing=unit(0, "lines"), axis.text.x = element_text(angle = 90))
+
+ggsave('./figs/noise_impact.png', plot = p, width = 8.5, height = 8.25, units = "cm")
+p
+```
+
+```{r}
+results %>% 
+  count(n_samps)
+```
+
+
+```{r}
+in_data <- results %>% 
+  mutate(rank = rank / 40) %>% 
+  filter(dataset_margin == 0.1) %>%   # 100 samples
+  filter(model_type != 'dummy', model_type != 'MOFA_GROUPED') %>%
+
+
+  # just pls and asc/pca with non abs cosine
+  filter((model_type == 'PLS') | (model_type != 'PLS' & !dist_abs & dist_type == 'cosine')) %>% 
+  
+  group_by(model_type,  n_samps, noise_lvl) %>% 
+  # compute the intervals
+  mutate(rank_y = quantiles_95(rank)$y, rank_min = quantiles_95(rank)$ymin, rank_max = quantiles_95(rank)$ymax) %>% 
+  ungroup()
+  
+p <- in_data %>% 
+  # aesthetic related mutations
+  mutate(type = fct_recode(type, 'Gene' = 'gene', 'Biomass' = 'bm', 'Metabolite' = 'metab')) %>% 
+  
+  ggplot(aes(x = fct_rev(as_factor(n_samps)), y = as_factor(noise_lvl), fill = rank_y)) +
+    # stat_summary(geom='tile')
+    geom_tile() +
+    geom_point(aes(y = as.numeric(as_factor(noise_lvl)) - 0.2, color = rank_min)) +
+    geom_point(aes(y = as.numeric(as_factor(noise_lvl)) + 0.2, color = rank_max)) +
+
+    facet_wrap(~ model_type, ncol = 2) +
+    # add color scales
+    scale_fill_iridescent(limits = c(min(in_data$rank_min), max(in_data$rank_max))) +
+    scale_color_iridescent(limits = c(min(in_data$rank_min), max(in_data$rank_max))) +
+  
+    # coords and such
+    guides(color=FALSE) +
+    coord_equal() +
+    labs(x = TeX('# reps ($n_{rep}$)'), y = TeX('Noise Ratio ($\\epsilon$)'),  fill = 'Norm\nRank') +
+    theme(panel.grid.major.x = element_blank(), panel.grid.major.y = element_blank(), 
+          panel.spacing=unit(0, "lines"), axis.text.x = element_text(angle = 90))
+
+ggsave('./figs/samps_impact.png', plot = p, width = 8.5, height = 8.25, units = "cm")
+p
+```
+
+```{r}
+target_samps <-  10
+target_noise <- 0.1
+target_margin <- 0.1
+
+best_models <- results %>% 
+  mutate(rank = rank / 40) %>% 
+  # filter(noise_lvl == target_noise, dataset_margin == target_margin) %>%
+  # 10% margi nand error
+  filter(model_type != "dummy") %>%
+  group_by(model_type, dist_type, dist_abs) %>% 
+  summarise(rank = mean(rank), mean_rank = mean(rank)) %>% 
+  group_by(model_type) %>% 
+  arrange(rank, mean_rank) %>% 
+  slice_head(n = 1) %>% 
+  ungroup() %>% 
+  
+  # add the proper dist name
+  mutate( model_type = ifelse(model_type == "dummy", "Baseline", model_type) ) %>% 
+  mutate(dist_name = get_model_name(model_type, dist_type, dist_abs))  %>% 
+  mutate(dist_name = ifelse(model_type == 'PLS', 'ViP', dist_name))  # set PLS to ViP
+
+
+p <- results %>% 
+  mutate(rank = rank / 40) %>% 
+  # 10% margi nand error
+  filter(model_type != "dummy") %>%
+  # filter(noise_lvl == target_noise, dataset_margin == target_margin) %>%
+  
+  # rename dummy
+  mutate( model_type = ifelse(model_type == "dummy", "Baseline", model_type) ) %>% 
+  # get the distance name
+  mutate(dist_name = get_model_name(model_type, dist_type, dist_abs)) %>%
+  mutate(dist_name = ifelse(model_type == 'PLS', 'ViP', dist_name)) %>%   # set PLS to ViP
+
+  # rename the feature types
+  mutate(type = fct_recode(type, 'Gene' = 'gene', 'Biomass' = 'bm', 'Metabolite' = 'metab', "Internal" = 'internal')) %>% 
+  
+  # differentiate between differnt types of pathways with features
+  mutate(
+    h_str = ifelse(pathway_has_host, 'H', ''), m_str = ifelse(pathway_has_microbe, 'M', ''),
+    path_type = glue::glue("{h_str}{m_str}"),
+    full_type = glue::glue("{as.character(type)}({path_type})") %>%  as_factor()
+  ) %>% 
+  
+  mutate(model_type = factor(model_type, levels=c("PCA", "ASCA", "MOFA", "PLS"))) %>% 
+  
+  # filter(n_samps != 100) %>% 
+  
+  mutate(
+    h_str = ifelse(pathway_has_host, 'H', ''), m_str = ifelse(pathway_has_microbe, 'M', ''),
+    type = type %>% as.numeric(),
+    pathway_type = glue::glue("{h_str}{m_str}"),
+    full_type = glue::glue("{type}({h_str}{m_str})") %>%  as_factor()
+  ) %>% 
+  
+  ggplot(aes(x = fct_rev(as_factor(pathway_type)), y = rank, color = fct_rev(as_factor(pathway_type)))) +
+  # ggplot(aes(x = fct_rev(as_factor(dataset_margin)), y = rank, color = fct_rev(as_factor(dataset_margin)))) +
+  # ggplot(aes(x = fct_rev(as_factor(n_samps)), y = rank, color = fct_rev(as_factor(n_samps)))) +
+    geom_violin(
+      # aes(linetype = path_type %>%  as_factor(), color = as_factor(type)),
+      fill = NA,  linewidth = 0.25,
+      draw_quantiles = c(0.25, 0.5, 0.75), scale="width",
+      trim = T
+    ) +
+    # stat_compare_means(method = "t.test", paired = F, comparisons=list(c(1,2), c(2,3), c(1,3))) +
+    stat_summary(geom = "point", size=0.1) +
+    stat_summary(mapping=aes(label = round(after_stat(y), 2), ), 
+                 position=position_nudge(y = 0.1), geom = "text", size = 3, color = "black") +
+    facet_wrap(~ model_type, nrow = 1) +
+    scale_color_bright() +
+    labs(x = TeX("Pathway Type$"), y = "Normalized Rank")  +
+  
+    theme(legend.position = "none") +
+    theme(plot.title = element_text(size=14),
+          legend.margin = margin(0, 0, 0, 0),
+          legend.key.width = unit(0.3, 'cm'), legend.key.height = unit(0.3, 'cm'),
+          panel.spacing = unit(0, "lines"),
+          panel.margin = unit(0.1, "cm"))  +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+    )
+
+ggsave('./figs/pathway_impact.png', plot = p, width = 8.5, height = 5, units = "cm") 
+p
+  
+```
+
+```{r}
+# target_samps <-  10
+target_noise <- 0.1
+target_margin <- 0.1
+
+best_models <- results %>% 
+  mutate(rank = rank / 40) %>% 
+  # filter(noise_lvl == target_noise, dataset_margin == target_margin) %>%
+  # 10% margi nand error
+  filter(model_type != "dummy") %>%
+  group_by(model_type, dist_type, dist_abs) %>% 
+  summarise(rank = mean(rank), mean_rank = mean(rank)) %>% 
+  group_by(model_type) %>% 
+  arrange(rank, mean_rank) %>% 
+  slice_head(n = 1) %>% 
+  ungroup() %>% 
+  
+  # add the proper dist name
+  mutate( model_type = ifelse(model_type == "dummy", "Baseline", model_type) ) %>% 
+  mutate(dist_name = get_model_name(model_type, dist_type, dist_abs))  %>% 
+  mutate(dist_name = ifelse(model_type == 'PLS', 'ViP', dist_name))  # set PLS to ViP
+
+
+p <- results %>% 
+  mutate(rank = rank / 40) %>% 
+  # 10% margi nand error
+  filter(model_type != "dummy") %>%
+  # filter(noise_lvl == target_noise, dataset_margin == target_margin) %>%
+  
+  # rename dummy
+  mutate( model_type = ifelse(model_type == "dummy", "Baseline", model_type) ) %>% 
+  # get the distance name
+  mutate(dist_name = get_model_name(model_type, dist_type, dist_abs)) %>%
+  mutate(dist_name = ifelse(model_type == 'PLS', 'ViP', dist_name)) %>%   # set PLS to ViP
+
+  # rename the feature types
+  mutate(type = fct_recode(type, 'Gene' = 'gene', 'Biomass' = 'bm', 'Metabolite' = 'metab', "Internal" = 'internal')) %>% 
+  
+  # differentiate between differnt types of pathways with features
+  mutate(
+    h_str = ifelse(pathway_has_host, 'H', ''), m_str = ifelse(pathway_has_microbe, 'M', ''),
+    path_type = glue::glue("{h_str}{m_str}"),
+    full_type = glue::glue("{as.character(type)}({path_type})") %>%  as_factor()
+  ) %>% 
+  
+  mutate(model_type = factor(model_type, levels=c("PCA", "ASCA", "MOFA", "PLS"))) %>% 
+  
+  filter(n_samps != 100) %>% 
+  
+  mutate(
+    h_str = ifelse(pathway_has_host, 'H', ''), m_str = ifelse(pathway_has_microbe, 'M', ''),
+    type = type %>% as.numeric(),
+    pathway_type = glue::glue("{h_str}{m_str}"),
+    full_type = glue::glue("{type}({h_str}{m_str})") %>%  as_factor()
+  ) %>% 
+  
+  # ggplot(aes(x = fct_rev(as_factor(pathway_type)), y = rank, color = fct_rev(as_factor(pathway_type)))) +
+  # ggplot(aes(x = fct_rev(as_factor(dataset_margin)), y = rank, color = fct_rev(as_factor(dataset_margin)))) +
+  ggplot(aes(x = fct_rev(as_factor(n_samps)), y = rank, color = fct_rev(as_factor(n_samps)))) +
+    geom_violin(
+      # aes(linetype = path_type %>%  as_factor(), color = as_factor(type)),
+      fill = NA,  linewidth = 0.25,
+      draw_quantiles = c(0.25, 0.5, 0.75), scale="width",
+      trim = T
+    ) +
+    # stat_compare_means(method = "t.test", paired = F, comparisons=list(c(1,2), c(2,3), c(1,3))) +
+    stat_summary(geom = "point", size=0.1) +
+    stat_summary(mapping=aes(label = round(after_stat(y), 2), ), 
+                 position=position_nudge(y = 0.1), geom = "text", size = 3, color = "black") +
+    facet_wrap(~ model_type, nrow = 1) +
+    scale_color_bright() +
+    labs(x = TeX("$n_{rep}$"), y = "Normalized Rank")  +
+  
+    theme(legend.position = "none") +
+    theme(plot.title = element_text(size=14),
+          legend.margin = margin(0, 0, 0, 0),
+          legend.key.width = unit(0.3, 'cm'), legend.key.height = unit(0.3, 'cm'),
+          panel.spacing = unit(0, "lines"),
+          panel.margin = unit(0.1, "cm"))  +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+    )
+
+ggsave('./figs/n_samp_impact.png', plot = p, width = 8.5, height = 5, units = "cm") 
+p
+```
+
+
+
+
+```{r}
+results %>% 
+  ggplot(aes(x = as_factor(dataset_margin), y = rank)) +
+    stat_summary(gceom='pointrange', fun.data=mean_cl_normal) +
+    # geom_violin()
+    facet_wrap(~ model_type)
+```
+

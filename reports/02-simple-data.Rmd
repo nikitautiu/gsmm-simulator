@@ -1,0 +1,127 @@
+---
+title: "02-simple-data"
+author: "Nichita Utiu"
+date: "2023-08-07"
+output: html_document
+---
+
+## Init
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      eval = TRUE,
+                      message = FALSE,
+                      warning = FALSE,
+                      fig.path = "Figures/",
+                      fig.width = 12,
+                      fig.height = 8)
+```
+
+```{r}
+library(tidyverse)
+library(hrbrthemes)
+library(reticulate)
+library(ggrepel)
+library(khroma)
+library(arrow)
+library(ggbeeswarm)
+library(ordr)
+library(jsonlite)
+library(latex2exp)
+library(patchwork)
+library(ggforce)
+library(kableExtra)
+
+reticulate::use_miniconda("biotools") # initialize reticulate
+theme_set(theme_ipsum() + theme(plot.margin = unit(c(0,0,0,0), "cm")))
+```
+
+```{r}
+source('../R/evaluation.R')
+```
+
+
+```{r}
+raw_data <- load_data('../data/interim/simple_data/')
+```
+
+
+
+```{r}
+raw_data$bm_data %>% 
+  select(reaction, flux, samp, EX_M2_m_lvl, EX_M1_m_lvl) %>% 
+  pivot_wider(values_from = 'flux', names_from = 'reaction') %>% 
+  unite("cond", c(EX_M2_m_lvl, EX_M1_m_lvl)) %>% 
+  
+  ggplot(aes(x = .panel_x, y = .panel_y)) + 
+    geom_smooth(aes(color = as_factor(cond))) + 
+    facet_matrix(vars(-c(samp, cond)))
+```
+
+
+```{r}
+
+# 
+# clean_data$data %>% 
+#   pivot_longer(cols = -c(samp, EX_M2_m_lvl, EX_M1_m_lvl), names_to = 'feature', values_to = 'value') %>% 
+#   unite("cond", c(EX_M2_m_lvl, EX_M1_m_lvl)) %>% 
+#   ggplot(aes(x = .panel_x, y = .panel_y)) + 
+#     geom_smooth(aes(color = as_factor(cond))) + 
+#     facet_matrix(vars(-c(samp, cond)))
+
+```
+
+```{r}
+# clean_data$data %>% 
+#   unite("cond", c(EX_M2_m_lvl, EX_M1_m_lvl)) %>% 
+#   ggplot(aes(x = .panel_x, y = .panel_y)) + 
+#     geom_point(aes(color = as_factor(cond))) + 
+#     facet_matrix(vars(-c(samp, cond)))
+```
+
+```{r}
+clean_data <- raw_data %>%
+  clean_up_data()
+
+for (cond_f in unique(clean_data$data %>% unite("cond", c(EX_M2_m_lvl, EX_M1_m_lvl)) %>% .$cond)) {
+  
+  p <- clean_data$data %>% 
+    unite("cond", c(EX_M2_m_lvl, EX_M1_m_lvl)) %>%
+    filter(cond == cond_f) %>% 
+    select(-samp, -cond) %>% 
+    cor() %>% 
+    corrplot::corrplot(
+      method = 'circle', col = rev(color('BuRd')(100)), 
+      order = 'original'
+    ) 
+}
+  
+```
+
+```{r}
+cols <- cln_data_to_col_map(clean_data) %>% 
+  mutate(is_imp = (feature %in% clean_data$specs[[1]] %>% as.numeric())) %>% 
+  arrange(-is_imp, type) %>% 
+  pull(feature)
+```
+
+
+
+
+```{r}
+clean_data$data %>% 
+  unite("cond", c(EX_M2_m_lvl, EX_M1_m_lvl)) %>%
+  # filter(cond == '1_1') %>%
+  # select(-samp, -cond)  %>% 
+  ggplot(aes(x = P1, y = P2, color = as_factor(cond))) +
+    geom_point() +
+    geom_smooth(method = 'lm')
+```
+
+```{r}
+unique(clean_data$specs)
+```
+
+
+
