@@ -43,8 +43,6 @@ RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-${CONDA_VERSION}
 # create the environments from templates
 COPY docker/environments/ environments/ 
 RUN conda env create -f /tmp/environments/biotools.yml && \
-    # conda env create -f /tmp/environments/nb-base.yml && \
-    # conda env create -f /tmp/environments/cnapy.yml && \
     echo "conda activate biotools" >> /home/rstudio/.profile  \
     rm -rf environments
 
