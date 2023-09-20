@@ -592,7 +592,7 @@ def add_pathway(
         # print(existing_rxns)
         if ((organism != 'H' and 'H' in pathway)  or ('H' not in pathway)) and use_biomass_for_microbes:
             # for microbes use the biomass - get the id of objective
-            rxn_targ = com.initial_models[organism].objective.id
+            rxn_targ = com.initial_models[organism].objective.variables.pop().name
 
         else:
             rxn_targ = sample_targets(
