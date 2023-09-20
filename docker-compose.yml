@@ -9,13 +9,13 @@ services:
     volumes:
         - '.:/home/rstudio/project/'
         - './renv/cache:/renv/cache/'
-          #     - './renv/root:/renv/root/'
         - './R.cache:/home/rstudio/.cache/R/R.cache'
     ports:
       - "8787:8787"
     environment:
-      #  - 'DISABLE_AUTH=true'
       - 'PASSWORD=pass'
+
+    # calling renv::restore is necessary - we cannot mount the cache during image buildingin
     entrypoint: sh -c 'cd /home/rstudio/project && R -e "renv::restore()" && /init'
 
   jupyter-notebook:
