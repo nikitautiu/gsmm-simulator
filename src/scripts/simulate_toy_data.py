@@ -254,7 +254,7 @@ def main():
     )
 
     # 
-    simulate_and_save(OUTPUT_PATH, thinning=THINNING, levels=N_LEVELS, 
+    simulate_and_save(OUTPUT_PATH, com = com, exp_designer=exp_designer, thinning=THINNING, levels=N_LEVELS, 
                       conditions=2, margin=MARGIN, results_full=result_full)
 
 
